@@ -49,17 +49,19 @@ package autogcd
 import (
 	"errors"
 	"fmt"
-	"github.com/wirepair/gcd"
 	"os"
 	"sync"
+
+	"github.com/wirepair/gcd"
 )
 
 type AutoGcd struct {
-	debugger *gcd.Gcd
-	settings *Settings
-	tabLock  *sync.RWMutex
-	tabs     map[string]*Tab
-	shutdown bool
+	debugger     *gcd.Gcd
+	settings     *Settings
+	tabLock      *sync.RWMutex
+	tabs         map[string]*Tab
+	shutdown     bool
+	localProcess bool
 }
 
 // Creates a new AutoGcd based off the provided settings.
@@ -99,6 +101,7 @@ func (auto *AutoGcd) SetTerminationHandler(handler gcd.TerminatedHandler) {
 
 // Starts Google Chrome with debugging enabled.
 func (auto *AutoGcd) Start() error {
+	auto.localProcess = true
 	auto.debugger.StartProcess(auto.settings.chromePath, auto.settings.userDir, auto.settings.chromePort)
 	tabs, err := auto.debugger.GetTargets()
 	if err != nil {
@@ -116,7 +119,28 @@ func (auto *AutoGcd) Start() error {
 	return nil
 }
 
-// Closes all tabs and shuts down the browser.
+// ConnectToRemote Connect to a remote chrome instance
+// Host - The host destination
+// Port - The port to conenct to (normal debugging port is 9222)
+func (auto *AutoGcd) ConnectToRemote(host string, port string) error {
+	auto.debugger.ConnectToInstance(host, port)
+	tabs, err := auto.debugger.GetTargets()
+	if err != nil {
+		return err
+	}
+	auto.tabLock.Lock()
+	for _, tab := range tabs {
+		t, err := open(tab)
+		if err != nil {
+			return err
+		}
+		auto.tabs[tab.Target.Id] = t
+	}
+	auto.tabLock.Unlock()
+	return nil
+}
+
+// Shutdown Closes all tabs and shuts down the browser unless remote connection.
 func (auto *AutoGcd) Shutdown() error {
 	if auto.shutdown {
 		return errors.New("AutoGcd already shut down.")
@@ -128,10 +152,13 @@ func (auto *AutoGcd) Shutdown() error {
 		auto.debugger.CloseTab(tab.ChromeTarget)
 
 	}
+	var err error
 	auto.tabLock.Unlock()
-	err := auto.debugger.ExitProcess()
-	if auto.settings.removeUserDir == true {
-		return os.RemoveAll(auto.settings.userDir)
+	if auto.localProcess {
+		err = auto.debugger.ExitProcess()
+		if auto.settings.removeUserDir == true {
+			return os.RemoveAll(auto.settings.userDir)
+		}
 	}
 
 	auto.shutdown = true
